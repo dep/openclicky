@@ -23,6 +23,12 @@ struct CompanionPanelView: View {
     @State private var showDevTools = false
     #endif
     private let setPanelPinned: (Bool) -> Void
+    private let onPanelDismiss: () -> Void
+    private let onQuit: () -> Void
+    private let onOpenHUD: () -> Void
+    private let onOpenMemory: () -> Void
+    private let onOpenFeedback: () -> Void
+    private let onShowSettings: () -> Void
 
     private var isReadyForFirstOnboarding: Bool {
         !companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted
@@ -51,9 +57,41 @@ struct CompanionPanelView: View {
         isPanelPinned: Bool = false,
         setPanelPinned: @escaping (Bool) -> Void = { _ in }
     ) {
+        self.init(
+            companionManager: companionManager,
+            isPanelPinned: isPanelPinned,
+            setPanelPinned: setPanelPinned,
+            onPanelDismiss: {
+                NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+            },
+            onQuit: { NSApp.terminate(nil) },
+            onOpenHUD: { companionManager.showCodexHUD() },
+            onOpenMemory: { companionManager.showMemoryWindow() },
+            onOpenFeedback: { Self.openFeedbackInbox() },
+            onShowSettings: { companionManager.showSettingsWindow() }
+        )
+    }
+
+    init(
+        companionManager: CompanionManager,
+        isPanelPinned: Bool = false,
+        setPanelPinned: @escaping (Bool) -> Void = { _ in },
+        onPanelDismiss: @escaping () -> Void,
+        onQuit: @escaping () -> Void,
+        onOpenHUD: @escaping () -> Void,
+        onOpenMemory: @escaping () -> Void,
+        onOpenFeedback: @escaping () -> Void,
+        onShowSettings: @escaping () -> Void
+    ) {
         self.companionManager = companionManager
         self._isPanelPinned = State(initialValue: isPanelPinned)
         self.setPanelPinned = setPanelPinned
+        self.onPanelDismiss = onPanelDismiss
+        self.onQuit = onQuit
+        self.onOpenHUD = onOpenHUD
+        self.onOpenMemory = onOpenMemory
+        self.onOpenFeedback = onOpenFeedback
+        self.onShowSettings = onShowSettings
     }
 
     var body: some View {
@@ -124,14 +162,14 @@ struct CompanionPanelView: View {
                     setDeepgramAPIKey: { companionManager.setDeepgramAPIKey($0) },
                     setCodexAgentAPIKey: { companionManager.setCodexAgentAPIKey($0) },
                     replayOnboarding: {},
-                    quitClicky: { NSApp.terminate(nil) },
-                    openHUD: { companionManager.showCodexHUD() },
-                    openMemory: { companionManager.showMemoryWindow() },
+                    quitClicky: onQuit,
+                    openHUD: onOpenHUD,
+                    openMemory: onOpenMemory,
                     dismissResponseCard: { companionManager.dismissLatestResponseCard() },
                     runSuggestedNextAction: { companionManager.runSuggestedNextAction($0) },
                     prepareVoiceFollowUp: { companionManager.prepareForVoiceFollowUp() },
-                    openFeedback: openFeedbackInbox,
-                    showSettings: showSettingsPanel
+                    openFeedback: onOpenFeedback,
+                    showSettings: onShowSettings
                 )
                 .padding(.horizontal, 14)
             }
@@ -252,7 +290,7 @@ struct CompanionPanelView: View {
 
     private var closePanelButton: some View {
         Button(action: {
-            NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+            onPanelDismiss()
         }) {
             Image(systemName: "xmark")
                 .font(.system(size: 9, weight: .semibold))
@@ -839,7 +877,7 @@ struct CompanionPanelView: View {
     }
 
     private func showSettingsPanel() {
-        companionManager.showSettingsWindow()
+        onShowSettings()
     }
 
     private func schedulePanelContentSizeRefresh() {
@@ -1024,7 +1062,7 @@ struct CompanionPanelView: View {
                         footerIconButton(
                             systemImageName: "books.vertical",
                             helpText: "Open memory",
-                            action: { companionManager.showMemoryWindow() }
+                            action: { onOpenMemory() }
                         )
                     }
 
@@ -1039,7 +1077,7 @@ struct CompanionPanelView: View {
                     footerIconButton(
                         systemImageName: "power",
                         helpText: "Quit OpenClicky",
-                        action: { NSApp.terminate(nil) }
+                        action: onQuit
                     )
                 }
             }
@@ -1091,7 +1129,7 @@ struct CompanionPanelView: View {
         VStack(alignment: .leading, spacing: 0) {
             devToolRow("Test cursor flight", systemImage: "arrow.up.right") {
                 companionManager.debugTestCursorFlight()
-                NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+                onPanelDismiss()
             }
 
             devToolRow("Show response card", systemImage: "text.bubble") {
@@ -1164,9 +1202,7 @@ struct CompanionPanelView: View {
 
     private var footerSection: some View {
         HStack {
-            Button(action: {
-                NSApp.terminate(nil)
-            }) {
+            Button(action: onQuit) {
                 HStack(spacing: 6) {
                     Image(systemName: "power")
                         .font(.system(size: 11, weight: .medium))
@@ -1223,7 +1259,7 @@ struct CompanionPanelView: View {
         }
     }
 
-    private func openFeedbackInbox() {
+    private static func openFeedbackInbox() {
         guard let url = URL(string: "https://github.com/jasonkneen/openclicky/issues") else {
             return
         }
