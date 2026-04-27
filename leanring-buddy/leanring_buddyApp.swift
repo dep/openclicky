@@ -29,7 +29,8 @@ struct leanring_buddyApp: App {
 /// Manages the companion lifecycle: creates the menu bar panel and starts
 /// the companion voice pipeline on launch.
 @MainActor
-final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
+final class CompanionAppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDelegate, SPUStandardUserDriverDelegate {
+    private static let sparkleFeedOverrideDefaultsKey = "OpenClickySparkleFeedURLOverride"
     private var menuBarPanelManager: MenuBarPanelManager?
     private let companionManager = CompanionManager()
     private var sparkleUpdaterController: SPUStandardUpdaterController?
@@ -45,6 +46,7 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
 
         menuBarPanelManager = MenuBarPanelManager(companionManager: companionManager)
         companionManager.start()
+        companionManager.publishWidgetSnapshot()
         // Auto-open the panel if the user still needs to do something:
         // either they haven't onboarded yet, or permissions were revoked.
         // OpenClicky development builds should also open visibly on launch even
@@ -56,11 +58,15 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
             menuBarPanelManager?.showPanelOnLaunch()
         }
         registerAsLoginItemIfNeeded()
-        // startSparkleUpdater()
+        startSparkleUpdater()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         companionManager.stop()
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        urls.forEach { companionManager.handleWidgetDeepLink($0) }
     }
 
     /// Registers the app as a login item so it launches automatically on
@@ -80,16 +86,64 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
 
     private func startSparkleUpdater() {
         let updaterController = SPUStandardUpdaterController(
-            startingUpdater: false,
-            updaterDelegate: nil,
-            userDriverDelegate: nil
+            startingUpdater: true,
+            updaterDelegate: self,
+            userDriverDelegate: self
         )
         self.sparkleUpdaterController = updaterController
 
-        do {
-            try updaterController.updater.start()
-        } catch {
-            print("OpenClicky: Sparkle updater failed to start: \(error)")
+        if Self.sparkleFeedOverrideURLString() != nil {
+            DispatchQueue.main.async {
+                updaterController.updater.checkForUpdatesInBackground()
+            }
         }
+    }
+
+    func feedURLString(for updater: SPUUpdater) -> String? {
+        guard let override = Self.sparkleFeedOverrideURLString() else { return nil }
+        print("OpenClicky: Using Sparkle feed override: \(override)")
+        return override
+    }
+
+    var supportsGentleScheduledUpdateReminders: Bool {
+        true
+    }
+
+    func standardUserDriverShouldHandleShowingScheduledUpdate(
+        _ update: SUAppcastItem,
+        andInImmediateFocus immediateFocus: Bool
+    ) -> Bool {
+        true
+    }
+
+    func standardUserDriverWillHandleShowingUpdate(
+        _ handleShowingUpdate: Bool,
+        forUpdate update: SUAppcastItem,
+        state: SPUUserUpdateState
+    ) {
+        guard handleShowingUpdate, !state.userInitiated else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        menuBarPanelManager?.showPanelOnLaunch()
+    }
+
+    private static func sparkleFeedOverrideURLString() -> String? {
+        let override = UserDefaults.standard.string(forKey: sparkleFeedOverrideDefaultsKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let override, !override.isEmpty else { return nil }
+        guard let url = URL(string: override),
+              ["https", "http", "file"].contains(url.scheme?.lowercased() ?? "") else {
+            print("OpenClicky: Ignoring invalid Sparkle feed override: \(override)")
+            return nil
+        }
+
+        if url.scheme?.lowercased() == "http" {
+            let host = url.host?.lowercased() ?? ""
+            guard host == "localhost" || host == "127.0.0.1" || host == "::1" else {
+                print("OpenClicky: Ignoring non-local HTTP Sparkle feed override: \(override)")
+                return nil
+            }
+        }
+
+        return override
     }
 }

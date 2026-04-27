@@ -2,10 +2,10 @@ import AppKit
 import SwiftUI
 
 private enum OpenClickyHUDLayout {
-    static let width: CGFloat = 396
-    static let height: CGFloat = 301
-    static let minimumWidth: CGFloat = 396
-    static let minimumHeight: CGFloat = 301
+    static let width: CGFloat = 594
+    static let height: CGFloat = 452
+    static let minimumWidth: CGFloat = 594
+    static let minimumHeight: CGFloat = 452
 }
 
 @MainActor
@@ -132,10 +132,10 @@ private struct CodexHUDView: View {
                 ClickyResponseCardCompactView(
                     card: card,
                     actionHandlers: ClickyResponseCardActionHandlers(
-                        dismiss: { session.dismissLatestResponseCard() },
+                        dismiss: { companionManager.dismissLatestResponseCard() },
                         runSuggestedNextAction: { actionTitle in
                             session.dismissLatestResponseCard()
-                            session.submitPromptFromUI(actionTitle)
+                            companionManager.submitAgentPromptFromUI(actionTitle)
                         },
                         openTextFollowUp: nil,
                         openVoiceFollowUp: {
@@ -249,7 +249,7 @@ private struct CodexHUDView: View {
                 }
                 .padding(10)
             }
-            .onChange(of: session.entries.count) { _ in
+            .onChange(of: session.entries.count) {
                 if let id = session.entries.last?.id {
                     withAnimation(.easeOut(duration: 0.18)) {
                         proxy.scrollTo(id, anchor: .bottom)
@@ -330,7 +330,7 @@ private struct CodexHUDView: View {
         guard canSend else { return }
         let submitted = prompt
         prompt = ""
-        session.submitPromptFromUI(submitted)
+        companionManager.submitAgentPromptFromUI(submitted)
     }
 
     private func iconButton(systemName: String, helpText: String, action: @escaping () -> Void) -> some View {

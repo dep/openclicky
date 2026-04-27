@@ -1,6 +1,6 @@
 import Foundation
 
-final class CodexProcessManager {
+nonisolated final class CodexProcessManager: @unchecked Sendable {
     private var process: Process?
     private var inputPipe: Pipe?
     private var outputPipe: Pipe?
@@ -39,10 +39,16 @@ final class CodexProcessManager {
             runtimeExecutableURL: executableURL
         )
 
-        if environment["OPENAI_API_KEY"]?.isEmpty != false,
-           let userDefaultAPIKey = UserDefaults.standard.string(forKey: AppBundleConfiguration.userCodexAgentAPIKeyDefaultsKey),
-           !userDefaultAPIKey.isEmpty {
-            environment["OPENAI_API_KEY"] = userDefaultAPIKey
+        let codexAuthFile = codexHome.appendingPathComponent("auth.json", isDirectory: false)
+        let configFile = codexHome.appendingPathComponent("config.toml", isDirectory: false)
+        let configText = (try? String(contentsOf: configFile, encoding: .utf8)) ?? ""
+        let prefersChatGPTAuth = configText.contains("preferred_auth_method = \"chatgpt\"")
+        if prefersChatGPTAuth, FileManager.default.fileExists(atPath: codexAuthFile.path) {
+            environment.removeValue(forKey: "OPENAI_API_KEY")
+        } else if environment["OPENAI_API_KEY"]?.isEmpty != false,
+                  let configuredAPIKey = AppBundleConfiguration.openAIAPIKey(),
+                  !configuredAPIKey.isEmpty {
+            environment["OPENAI_API_KEY"] = configuredAPIKey
         }
 
         process.environment = environment
@@ -110,6 +116,16 @@ final class CodexProcessManager {
         }
         let requestWithID = CodexRPCRequest(id: requestID, method: request.method, params: request.params)
         let line = try requestWithID.encodedLine()
+        OpenClickyMessageLogStore.shared.append(
+            lane: "agent",
+            direction: "outgoing",
+            event: "codex.rpc.request",
+            fields: Self.summarizedRequestFieldsForLog(
+                id: requestID,
+                method: request.method,
+                params: request.params as? [String: Any]
+            )
+        )
 
         return try await withCheckedThrowingContinuation { continuation in
             stateQueue.async { [weak self] in
@@ -126,6 +142,15 @@ final class CodexProcessManager {
         }
         let request = CodexRPCRequest(id: nil, method: method, params: params)
         let line = try request.encodedLine()
+        OpenClickyMessageLogStore.shared.append(
+            lane: "agent",
+            direction: "outgoing",
+            event: "codex.rpc.notification",
+            fields: [
+                "method": method,
+                "params": params ?? [:]
+            ]
+        )
         stateQueue.async { [weak self] in
             self?.writeLine(line)
         }
@@ -164,6 +189,14 @@ final class CodexProcessManager {
     private func consumeStderr(_ data: Data) {
         stderrBuffer.append(data)
         consumeLines(from: &stderrBuffer) { [weak self] line in
+            OpenClickyMessageLogStore.shared.append(
+                lane: "agent",
+                direction: "incoming",
+                event: "codex.stderr",
+                fields: [
+                    "line": line
+                ]
+            )
             DispatchQueue.main.async {
                 self?.onStderrLine?(line)
             }
@@ -184,25 +217,149 @@ final class CodexProcessManager {
         guard let data = line.data(using: .utf8) else { return }
         do {
             guard let message = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+            OpenClickyMessageLogStore.shared.append(
+                lane: "agent",
+                direction: "incoming",
+                event: "codex.rpc.message",
+                fields: Self.summarizedMessageFieldsForLog(message)
+            )
             if let id = CodexJSON.int(message["id"]) {
                 let continuation = pending.removeValue(forKey: id)
                 if let error = CodexJSON.dictionary(message["error"]) {
-                    let text = CodexJSON.string(error["message"]) ?? "Codex app-server returned an error."
+                    var text = CodexRPCErrorMessage.readableMessage(from: error["message"])
+                        ?? "Codex app-server returned an error."
+                    if let dataText = Self.readableErrorData(error["data"]),
+                       !dataText.isEmpty,
+                       dataText != text {
+                        text += "\n\(dataText)"
+                    }
                     continuation?.resume(throwing: CodexRPCError(message: text))
                 } else {
                     let result = CodexJSON.dictionary(message["result"]) ?? [:]
                     continuation?.resume(returning: result)
                 }
             } else {
-                DispatchQueue.main.async { [weak self] in
-                    self?.onNotification?(message)
-                }
+                onNotification?(message)
             }
         } catch {
-            DispatchQueue.main.async { [weak self] in
-                self?.onStderrLine?("Could not parse Codex RPC line: \(line)")
+            onStderrLine?("Could not parse Codex RPC line: \(line)")
+        }
+    }
+
+    private static func summarizedRequestFieldsForLog(id: Int, method: String, params: [String: Any]?) -> [String: Any] {
+        var fields: [String: Any] = [
+            "id": id,
+            "method": method
+        ]
+
+        guard let params else { return fields }
+
+        switch method {
+        case "thread/start":
+            fields["model"] = params["model"] ?? ""
+            fields["cwd"] = params["cwd"] ?? ""
+            fields["approvalPolicy"] = params["approvalPolicy"] ?? ""
+            fields["sandbox"] = params["sandbox"] ?? ""
+            fields["baseInstructionsLength"] = (params["baseInstructions"] as? String)?.count ?? 0
+            fields["developerInstructionsLength"] = (params["developerInstructions"] as? String)?.count ?? 0
+        case "turn/start":
+            fields["threadId"] = params["threadId"] ?? ""
+            fields["model"] = params["model"] ?? ""
+            fields["cwd"] = params["cwd"] ?? ""
+            fields["effort"] = params["effort"] ?? ""
+            if let input = params["input"] as? [[String: Any]],
+               let first = input.first,
+               let text = first["text"] as? String {
+                fields["inputTextLength"] = text.count
+                fields["inputTextPreview"] = Self.shortLogSnippet(text, maxLength: 240)
+            }
+        default:
+            fields["params"] = params
+        }
+
+        return fields
+    }
+
+    private static func summarizedMessageFieldsForLog(_ message: [String: Any]) -> [String: Any] {
+        var fields: [String: Any] = [:]
+        if let id = CodexJSON.int(message["id"]) {
+            fields["id"] = id
+        }
+        if let method = CodexJSON.string(message["method"]) {
+            fields["method"] = method
+            let params = CodexJSON.dictionary(message["params"]) ?? [:]
+            fields["paramsSummary"] = summarizedNotificationParamsForLog(method: method, params: params)
+            return fields
+        }
+        if let error = CodexJSON.dictionary(message["error"]) {
+            fields["error"] = CodexRPCErrorMessage.readableMessage(from: error["message"]) ?? "Codex RPC error"
+        } else if let result = CodexJSON.dictionary(message["result"]) {
+            fields["resultKeys"] = Array(result.keys).sorted()
+        } else {
+            fields["kind"] = "unknown"
+        }
+        return fields
+    }
+
+    private static func summarizedNotificationParamsForLog(method: String, params: [String: Any]) -> [String: Any] {
+        var summary: [String: Any] = [:]
+        if let itemID = CodexJSON.string(params["itemId"]) {
+            summary["itemId"] = itemID
+        }
+        if let turnID = CodexJSON.string(params["turnId"]) {
+            summary["turnId"] = turnID
+        }
+        if let delta = CodexJSON.string(params["delta"]) {
+            summary["deltaLength"] = delta.count
+        }
+        if let text = CodexJSON.string(params["text"]) {
+            summary["textLength"] = text.count
+            summary["textPreview"] = Self.shortLogSnippet(text, maxLength: 180)
+        }
+        if let item = CodexJSON.dictionary(params["item"]) {
+            summary["itemType"] = CodexJSON.string(item["type"]) ?? ""
+            summary["itemId"] = CodexJSON.string(item["id"]) ?? summary["itemId"] ?? ""
+            if let text = CodexJSON.string(item["text"]) {
+                summary["itemTextLength"] = text.count
+                summary["itemTextPreview"] = Self.shortLogSnippet(text, maxLength: 180)
+            }
+            if let command = CodexJSON.string(item["command"]) {
+                summary["commandPreview"] = Self.shortLogSnippet(command, maxLength: 180)
+            }
+            if let output = CodexJSON.string(item["aggregatedOutput"]) {
+                summary["aggregatedOutputLength"] = output.count
             }
         }
+        if summary.isEmpty {
+            summary["keys"] = Array(params.keys).sorted()
+        }
+        return summary
+    }
+
+    private static func shortLogSnippet(_ text: String, maxLength: Int) -> String {
+        let flattened = text
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        guard flattened.count > maxLength else { return flattened }
+        let endIndex = flattened.index(flattened.startIndex, offsetBy: maxLength)
+        return "\(flattened[..<endIndex])..."
+    }
+
+    private static func readableErrorData(_ value: Any?) -> String? {
+        guard let value else { return nil }
+
+        if let message = CodexRPCErrorMessage.readableMessage(from: value) {
+            return message
+        }
+
+        guard JSONSerialization.isValidJSONObject(value),
+              let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
+              let text = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+
+        return text
     }
 
     private func failAllPendingRequests(message: String) {

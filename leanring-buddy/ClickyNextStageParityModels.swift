@@ -43,10 +43,27 @@ enum WikiManager {
             let wikiRoot = resourcesRoot.appendingPathComponent("OpenClickyBundledWikiSeed", isDirectory: true)
             let skillsRoot = resourcesRoot.appendingPathComponent("OpenClickyBundledSkills", isDirectory: true)
 
-            return Index(
-                articles: try loadArticles(root: wikiRoot, fileManager: fileManager),
-                skills: try loadSkills(root: skillsRoot, fileManager: fileManager)
+            return try load(
+                articleRoots: [wikiRoot],
+                skillRoots: [skillsRoot],
+                fileManager: fileManager
             )
+        }
+
+        static func load(articleRoots: [URL], skillRoots: [URL], fileManager: FileManager = .default) throws -> Index {
+            let articles = try articleRoots.flatMap { try loadArticles(root: $0, fileManager: fileManager) }
+            let skills = try skillRoots.flatMap { try loadSkills(root: $0, fileManager: fileManager) }
+            return Index(articles: articles, skills: skills)
+        }
+
+        func combined(with other: Index) -> Index {
+            let mergedArticles = Dictionary(grouping: articles + other.articles, by: \.id)
+                .compactMap { $0.value.last }
+                .sorted { $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending }
+            let mergedSkills = Dictionary(grouping: skills + other.skills, by: \.id)
+                .compactMap { $0.value.last }
+                .sorted { $0.identifier.localizedStandardCompare($1.identifier) == .orderedAscending }
+            return Index(articles: mergedArticles, skills: mergedSkills)
         }
 
         func article(containingTitle query: String) -> Article? {
@@ -354,6 +371,12 @@ struct ClickyResponseCard: Identifiable, Equatable {
         text = text.replacingOccurrences(of: #"\[POINT:[^\]]+\]"#, with: " ", options: .regularExpression)
         text = text.replacingOccurrences(of: #"(?m)^\s{0,3}#{1,6}\s+.*$"#, with: " ", options: .regularExpression)
         text = text.replacingOccurrences(of: #"(?m)^\s*[-*_]{3,}\s*$"#, with: " ", options: .regularExpression)
+        text = text.replacingOccurrences(
+            of: #"(?m)^\s*(\$|>|%|find\s|mdfind\s|rg\s|grep\s|ls\s|cat\s|sed\s|awk\s|python\s|node\s|npm\s|swift\s|open\s|osascript\s).*$"#,
+            with: " ",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        text = text.replacingOccurrences(of: #"(?m)^\s*(exit\s+\d+|stdout:|stderr:|command:).*$"#, with: " ", options: [.regularExpression, .caseInsensitive])
         text = text.replacingOccurrences(of: #"[`*_>#]"#, with: "", options: .regularExpression)
         text = text.components(separatedBy: .whitespacesAndNewlines)
             .filter { !$0.isEmpty }
@@ -459,6 +482,7 @@ struct WikiViewerEntry: Identifiable, Equatable {
 }
 
 extension WikiManager.Index {
+    @MainActor
     var viewerEntries: [WikiViewerEntry] {
         let articleEntries = articles.map(WikiViewerEntry.init(article:))
         let skillEntries = skills.map(WikiViewerEntry.init(skill:))
@@ -530,4 +554,3 @@ struct HandoffQueuedRegionScreenshot: Identifiable, Equatable {
         ]
     }
 }
-

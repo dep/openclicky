@@ -8,17 +8,19 @@ import Foundation
 /// Claude API helper with streaming for progressive text display.
 class ClaudeAPI {
     private static let tlsWarmupLock = NSLock()
-    private static var hasStartedTLSWarmup = false
+    nonisolated(unsafe) private static var hasStartedTLSWarmup = false
 
     private var apiKey: String?
     private let apiURL: URL
     var model: String
+    var maxOutputTokens: Int
     private let session: URLSession
 
-    init(apiKey: String?, model: String = "claude-sonnet-4-6") {
+    init(apiKey: String?, model: String = "claude-sonnet-4-6", maxOutputTokens: Int = 64_000) {
         self.apiKey = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.apiURL = URL(string: "https://api.anthropic.com/v1/messages")!
         self.model = model
+        self.maxOutputTokens = maxOutputTokens
 
         // Use .default instead of .ephemeral so TLS session tickets are cached.
         // Ephemeral sessions do a full TLS handshake on every request, which causes
@@ -56,6 +58,7 @@ class ClaudeAPI {
         request.timeoutInterval = 120
         request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
 
         return request
@@ -76,6 +79,10 @@ class ClaudeAPI {
         }
         // Default to JPEG — screen captures use JPEG compression
         return "image/jpeg"
+    }
+
+    private static func sanitizedAssistantContent(_ text: String) -> String {
+        text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Sends a no-op HEAD request to the API host to establish and cache a TLS session.
@@ -120,6 +127,7 @@ class ClaudeAPI {
         systemPrompt: String,
         conversationHistory: [(userPlaceholder: String, assistantResponse: String)] = [],
         userPrompt: String,
+        assistantPrefill: String? = nil,
         onTextChunk: @MainActor @Sendable (String) -> Void
     ) async throws -> (text: String, duration: TimeInterval) {
         let startTime = Date()
@@ -131,7 +139,7 @@ class ClaudeAPI {
 
         for (userPlaceholder, assistantResponse) in conversationHistory {
             messages.append(["role": "user", "content": userPlaceholder])
-            messages.append(["role": "assistant", "content": assistantResponse])
+            messages.append(["role": "assistant", "content": Self.sanitizedAssistantContent(assistantResponse)])
         }
 
         // Build current message with all labeled images + prompt
@@ -156,9 +164,28 @@ class ClaudeAPI {
         ])
         messages.append(["role": "user", "content": contentBlocks])
 
+        // Anthropic assistant-prefill: when set, the assistant turn is
+        // partially prepopulated with the given text. The model
+        // continues generating from that exact byte. The streamed
+        // delta we get back is JUST the continuation; the prefill is
+        // NOT echoed in the response.
+        //
+        // IMPORTANT: Anthropic rejects the request if the final
+        // assistant content ends in whitespace
+        // (`final assistant content cannot end with trailing whitespace`).
+        // Strip trailing whitespace before sending. The model emits a
+        // leading space on its continuation tokens naturally, so the
+        // reassembled text still reads cleanly.
+        if let rawPrefill = assistantPrefill {
+            let trimmed = Self.sanitizedAssistantContent(rawPrefill)
+            if !trimmed.isEmpty {
+                messages.append(["role": "assistant", "content": trimmed])
+            }
+        }
+
         let body: [String: Any] = [
             "model": model,
-            "max_tokens": 1024,
+            "max_tokens": maxOutputTokens,
             "stream": true,
             "system": systemPrompt,
             "messages": messages
@@ -168,6 +195,32 @@ class ClaudeAPI {
         request.httpBody = bodyData
         let payloadMB = Double(bodyData.count) / 1_048_576.0
         print("Claude streaming request: \(String(format: "%.1f", payloadMB))MB, \(images.count) image(s), model=\(model), url=\(apiURL.absoluteString)")
+        OpenClickyMessageLogStore.shared.append(
+            lane: "voice",
+            direction: "outgoing",
+            event: "claude.streaming.request",
+            fields: [
+                "model": model,
+                "url": apiURL.absoluteString,
+                "payloadBytes": bodyData.count,
+                "maxTokens": maxOutputTokens,
+                "systemPrompt": systemPrompt,
+                "conversationHistory": conversationHistory.map {
+                    [
+                        "user": $0.userPlaceholder,
+                        "assistant": $0.assistantResponse
+                    ]
+                },
+                "userPrompt": userPrompt,
+                "images": images.map {
+                    [
+                        "label": $0.label,
+                        "bytes": $0.data.count,
+                        "mediaType": detectImageMediaType(for: $0.data)
+                    ]
+                }
+            ]
+        )
 
         // Use bytes streaming for SSE (Server-Sent Events)
         let (byteStream, response) = try await session.bytes(for: request)
@@ -179,6 +232,22 @@ class ClaudeAPI {
                 userInfo: [NSLocalizedDescriptionKey: "Invalid HTTP response"]
             )
         }
+        let connectedAt = Date()
+        let contentType = httpResponse.value(forHTTPHeaderField: "Content-Type") ?? "unknown"
+        OpenClickyMessageLogStore.shared.append(
+            lane: "voice",
+            direction: "incoming",
+            event: "claude.streaming.connected",
+            fields: [
+                "model": model,
+                "statusCode": httpResponse.statusCode,
+                "contentType": contentType,
+                "payloadBytes": bodyData.count,
+                "connectionLatencyMs": Self.elapsedMilliseconds(from: startTime, to: connectedAt),
+                "transport": "sse",
+                "streamingMethod": "URLSession.bytes"
+            ]
+        )
 
         // If non-2xx status, read the full body as error text
         guard (200...299).contains(httpResponse.statusCode) else {
@@ -188,6 +257,17 @@ class ClaudeAPI {
             }
             let errorBody = errorBodyChunks.joined(separator: "\n")
             let contentType = httpResponse.value(forHTTPHeaderField: "Content-Type") ?? "unknown"
+            OpenClickyMessageLogStore.shared.append(
+                lane: "voice",
+                direction: "incoming",
+                event: "claude.streaming.error",
+                fields: [
+                    "model": model,
+                    "statusCode": httpResponse.statusCode,
+                    "contentType": contentType,
+                    "body": errorBody
+                ]
+            )
             throw NSError(
                 domain: "ClaudeAPI",
                 code: httpResponse.statusCode,
@@ -197,6 +277,8 @@ class ClaudeAPI {
 
         // Parse SSE stream — each event is "data: {json}\n\n"
         var accumulatedResponseText = ""
+        var textDeltaCount = 0
+        var firstTextDeltaAt: Date?
 
         for try await line in byteStream.lines {
             // SSE lines look like: "data: {...}"
@@ -218,15 +300,53 @@ class ClaudeAPI {
                let deltaType = delta["type"] as? String,
                deltaType == "text_delta",
                let textChunk = delta["text"] as? String {
+                textDeltaCount += 1
+                if firstTextDeltaAt == nil {
+                    firstTextDeltaAt = Date()
+                    OpenClickyMessageLogStore.shared.append(
+                        lane: "voice",
+                        direction: "incoming",
+                        event: "claude.streaming.first_text_delta",
+                        fields: [
+                            "model": model,
+                            "transport": "sse",
+                            "streamingMethod": "URLSession.bytes",
+                            "firstTokenLatencyMs": Self.elapsedMilliseconds(from: startTime, to: firstTextDeltaAt!),
+                            "connectionToFirstTokenMs": Self.elapsedMilliseconds(from: connectedAt, to: firstTextDeltaAt!),
+                            "chunkLength": textChunk.count
+                        ]
+                    )
+                }
                 accumulatedResponseText += textChunk
                 // Send the accumulated text so far to the UI for progressive rendering
                 let currentAccumulatedText = accumulatedResponseText
-                await onTextChunk(currentAccumulatedText)
+                await MainActor.run {
+                    onTextChunk(currentAccumulatedText)
+                }
             }
         }
 
         let duration = Date().timeIntervalSince(startTime)
+        OpenClickyMessageLogStore.shared.append(
+            lane: "voice",
+            direction: "incoming",
+            event: "claude.streaming.response",
+            fields: [
+                "model": model,
+                "duration": duration,
+                "durationMs": Self.elapsedMilliseconds(from: startTime, to: Date()),
+                "textDeltaCount": textDeltaCount,
+                "firstTokenLatencyMs": firstTextDeltaAt.map { Self.elapsedMilliseconds(from: startTime, to: $0) } ?? -1,
+                "transport": "sse",
+                "streamingMethod": "URLSession.bytes",
+                "text": accumulatedResponseText
+            ]
+        )
         return (text: accumulatedResponseText, duration: duration)
+    }
+
+    private static func elapsedMilliseconds(from start: Date, to end: Date) -> Int {
+        max(0, Int((end.timeIntervalSince(start) * 1000).rounded()))
     }
 
     /// Non-streaming fallback for validation requests where we don't need progressive display.
@@ -243,7 +363,7 @@ class ClaudeAPI {
         var messages: [[String: Any]] = []
         for (userPlaceholder, assistantResponse) in conversationHistory {
             messages.append(["role": "user", "content": userPlaceholder])
-            messages.append(["role": "assistant", "content": assistantResponse])
+            messages.append(["role": "assistant", "content": Self.sanitizedAssistantContent(assistantResponse)])
         }
 
         // Build current message with all labeled images + prompt
@@ -270,7 +390,7 @@ class ClaudeAPI {
 
         let body: [String: Any] = [
             "model": model,
-            "max_tokens": 256,
+            "max_tokens": maxOutputTokens,
             "system": systemPrompt,
             "messages": messages
         ]
@@ -279,6 +399,32 @@ class ClaudeAPI {
         request.httpBody = bodyData
         let payloadMB = Double(bodyData.count) / 1_048_576.0
         print("Claude request: \(String(format: "%.1f", payloadMB))MB, \(images.count) image(s), model=\(model), url=\(apiURL.absoluteString)")
+        OpenClickyMessageLogStore.shared.append(
+            lane: "voice",
+            direction: "outgoing",
+            event: "claude.request",
+            fields: [
+                "model": model,
+                "url": apiURL.absoluteString,
+                "payloadBytes": bodyData.count,
+                "maxTokens": maxOutputTokens,
+                "systemPrompt": systemPrompt,
+                "conversationHistory": conversationHistory.map {
+                    [
+                        "user": $0.userPlaceholder,
+                        "assistant": $0.assistantResponse
+                    ]
+                },
+                "userPrompt": userPrompt,
+                "images": images.map {
+                    [
+                        "label": $0.label,
+                        "bytes": $0.data.count,
+                        "mediaType": detectImageMediaType(for: $0.data)
+                    ]
+                }
+            ]
+        )
 
         let (data, response) = try await session.data(for: request)
 
@@ -286,6 +432,17 @@ class ClaudeAPI {
               (200...299).contains(httpResponse.statusCode) else {
             let responseString = String(data: data, encoding: .utf8) ?? "Unknown error"
             let contentType = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type") ?? "unknown"
+            OpenClickyMessageLogStore.shared.append(
+                lane: "voice",
+                direction: "incoming",
+                event: "claude.error",
+                fields: [
+                    "model": model,
+                    "statusCode": (response as? HTTPURLResponse)?.statusCode ?? -1,
+                    "contentType": contentType,
+                    "body": responseString
+                ]
+            )
             throw NSError(
                 domain: "ClaudeAPI",
                 code: (response as? HTTPURLResponse)?.statusCode ?? -1,
@@ -305,6 +462,16 @@ class ClaudeAPI {
         }
 
         let duration = Date().timeIntervalSince(startTime)
+        OpenClickyMessageLogStore.shared.append(
+            lane: "voice",
+            direction: "incoming",
+            event: "claude.response",
+            fields: [
+                "model": model,
+                "duration": duration,
+                "text": text
+            ]
+        )
         return (text: text, duration: duration)
     }
 }

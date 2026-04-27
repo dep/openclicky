@@ -18,6 +18,7 @@ OpenClicky uses local configuration only. There is no Google login requirement a
 - `leanring-buddyUITests/` contains UI test scaffolding.
 - `AppResources/OpenClicky/` contains bundled model instructions, skills, wiki seed, Codex runtime, and completion audio.
 - `appcast.xml`, `clicky-demo.gif`, and `dmg-background.png` support distribution and release packaging.
+- `docs/APP_UPDATES.md` documents the Sparkle update feed and direct-distribution release flow.
 
 The legacy `leanring-buddy` folder and scheme names are kept for project continuity. The product, bundle display name, and app identity are OpenClicky.
 
@@ -74,6 +75,24 @@ Do not use terminal `xcodebuild` for permission testing. macOS TCC permissions a
 
 For a lightweight syntax check that does not disturb macOS permissions, run `swiftc -parse` over the changed source files. Avoid launching unsigned or temporary build products for permission testing.
 
+## Direct Updates
+
+OpenClicky uses Sparkle for direct-distribution OTA updates. Installed builds check the signed `appcast.xml` feed from this repository's `main` branch, then download and install signed release DMGs from GitHub Releases. See [docs/APP_UPDATES.md](docs/APP_UPDATES.md) for the release checklist and appcast item template.
+
+## Credits And Upstream Work
+
+OpenClicky is maintained by [Jason Kneen](https://github.com/jasonkneen).
+
+This project builds on the original open-source Clicky work:
+
+- Original project: [farzaa/clicky](https://github.com/farzaa/clicky)
+- Original creator: Farza, GitHub [@farzaa](https://github.com/farzaa), X [@FarzaTV](https://x.com/farzatv)
+
+OpenClicky has also incorporated ideas and implementation patterns from these forks:
+
+- [@danpeg](https://github.com/danpeg)'s [danpeg/clicky](https://github.com/danpeg/clicky), reviewed locally as `clicky-teach`, for tutor-mode direction and idle observation behavior.
+- [@milind-soni](https://github.com/milind-soni)'s [milind-soni/tiptour-macos](https://github.com/milind-soni/tiptour-macos), for developer-menu/debug tooling patterns and related teaching-assistant UX ideas.
+
 ## License
 
-MIT. Copyright 2026 Jason Kneen.
+MIT. Copyright 2026 Jason Kneen. Portions are derived from or informed by the upstream MIT-licensed projects credited above.

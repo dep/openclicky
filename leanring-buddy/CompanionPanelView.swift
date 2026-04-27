@@ -14,7 +14,9 @@ struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
     @AppStorage(ClickyAccentTheme.userDefaultsKey) private var selectedAccentThemeID = ClickyAccentTheme.blue.rawValue
     @State private var isPanelPinned: Bool
-    @State private var isShowingSettings = false
+    #if DEBUG
+    @State private var showDevTools = false
+    #endif
     private let setPanelPinned: (Bool) -> Void
 
     private var isReadyForFirstOnboarding: Bool {
@@ -23,6 +25,20 @@ struct CompanionPanelView: View {
 
     private var isPermissionOnboardingActive: Bool {
         !companionManager.hasCompletedOnboarding && !companionManager.allPermissionsGranted
+    }
+
+    /// Whether to render the inline API keys section in the menu bar
+    /// panel. Surfaced during permission-granted states so users can
+    /// paste the required Anthropic key without opening the full
+    /// Settings window. Hidden during the permission onboarding flow
+    /// (Anthropic key has its own slot once permissions are granted)
+    /// and during the active advanced/Agent Mode dashboard, where the
+    /// `CodexAgentModePanelSection` already exposes the same fields.
+    private var shouldShowAPIKeysPanelSection: Bool {
+        guard companionManager.allPermissionsGranted else { return false }
+        guard !isPermissionOnboardingActive else { return false }
+        guard !companionManager.isAdvancedModeEnabled else { return false }
+        return true
     }
 
     init(
@@ -36,27 +52,16 @@ struct CompanionPanelView: View {
     }
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
-            if isShowingSettings {
-                settingsSubscreen
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
-            } else {
-                mainPanelContent
-                    .transition(.move(edge: .leading).combined(with: .opacity))
-            }
-        }
+        mainPanelContent
         .frame(
             minWidth: 356,
             maxWidth: .infinity,
-            minHeight: 428,
-            maxHeight: .infinity,
             alignment: .topLeading
         )
         .background(panelBackground)
-        .onChange(of: isShowingSettings) { _ in
-            schedulePanelContentSizeRefresh(isShowingSettings: isShowingSettings)
+        .onChange(of: companionManager.isAdvancedModeEnabled) {
+            schedulePanelContentSizeRefresh()
         }
-        .animation(.easeOut(duration: 0.16), value: isShowingSettings)
         .animation(.none, value: selectedAccentThemeID)
     }
 
@@ -85,7 +90,7 @@ struct CompanionPanelView: View {
                     .padding(.horizontal, 14)
             }
 
-            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted && companionManager.isAdvancedModeEnabled {
                 Spacer()
                     .frame(height: 12)
 
@@ -94,15 +99,24 @@ struct CompanionPanelView: View {
                     knowledgeIndex: companionManager.bundledKnowledgeIndex,
                     responseCard: companionManager.latestResponseCard,
                     transcriptionProviderDisplayName: companionManager.buddyDictationManager.transcriptionProviderDisplayName,
+                    transcriptionProviderID: companionManager.buddyDictationManager.transcriptionProviderID,
+                    setVoiceTranscriptionProvider: { companionManager.setVoiceTranscriptionProvider($0) },
                     isClickyCursorEnabled: companionManager.isClickyCursorEnabled,
                     setClickyCursorEnabled: { companionManager.setClickyCursorEnabled($0) },
+                    isTutorModeEnabled: companionManager.isTutorModeEnabled,
+                    setTutorModeEnabled: { companionManager.setTutorModeEnabled($0) },
+                    isAdvancedModeEnabled: companionManager.isAdvancedModeEnabled,
+                    setAdvancedModeEnabled: { companionManager.setAdvancedModeEnabled($0) },
                     selectedCompanionModelID: companionManager.selectedModel,
                     setSelectedCompanionModel: { companionManager.setSelectedModel($0) },
                     selectedComputerUseModelID: companionManager.selectedComputerUseModel,
                     setSelectedComputerUseModel: { companionManager.setSelectedComputerUseModel($0) },
+                    submitAgentPrompt: { companionManager.submitAgentPromptFromUI($0) },
                     setAnthropicAPIKey: { companionManager.setAnthropicAPIKey($0) },
                     setElevenLabsAPIKey: { companionManager.setElevenLabsAPIKey($0) },
                     setElevenLabsVoiceID: { companionManager.setElevenLabsVoiceID($0) },
+                    setAssemblyAIAPIKey: { companionManager.setAssemblyAIAPIKey($0) },
+                    setDeepgramAPIKey: { companionManager.setDeepgramAPIKey($0) },
                     setCodexAgentAPIKey: { companionManager.setCodexAgentAPIKey($0) },
                     replayOnboarding: {},
                     quitClicky: { NSApp.terminate(nil) },
@@ -142,12 +156,23 @@ struct CompanionPanelView: View {
             //         .padding(.horizontal, 16)
             // }
 
+            if shouldShowAPIKeysPanelSection {
+                Spacer()
+                    .frame(height: 16)
+
+                APIKeysPanelSection(
+                    apiKeyStore: .shared,
+                    companionManager: companionManager
+                )
+                .padding(.horizontal, 14)
+            }
+
             Spacer()
                 .frame(height: 14)
 
             bottomClickyControlsSection
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     // MARK: - Header
@@ -812,62 +837,21 @@ struct CompanionPanelView: View {
         companionManager.pointAtPermissionDragAssistant()
     }
 
-    private var settingsSubscreen: some View {
-        CodexAgentModeSettingsSheet(
-            session: companionManager.codexAgentSession,
-            knowledgeIndex: companionManager.bundledKnowledgeIndex,
-            responseCard: companionManager.latestResponseCard,
-            transcriptionProviderDisplayName: companionManager.buddyDictationManager.transcriptionProviderDisplayName,
-            isClickyCursorEnabled: companionManager.isClickyCursorEnabled,
-            setClickyCursorEnabled: { companionManager.setClickyCursorEnabled($0) },
-            selectedCompanionModelID: companionManager.selectedModel,
-            setSelectedCompanionModel: { companionManager.setSelectedModel($0) },
-            selectedComputerUseModelID: companionManager.selectedComputerUseModel,
-            setSelectedComputerUseModel: { companionManager.setSelectedComputerUseModel($0) },
-            setAnthropicAPIKey: { companionManager.setAnthropicAPIKey($0) },
-            setElevenLabsAPIKey: { companionManager.setElevenLabsAPIKey($0) },
-            setElevenLabsVoiceID: { companionManager.setElevenLabsVoiceID($0) },
-            setCodexAgentAPIKey: { companionManager.setCodexAgentAPIKey($0) },
-            replayOnboarding: {},
-            quitClicky: { NSApp.terminate(nil) },
-            openHUD: { companionManager.showCodexHUD() },
-            openMemory: { companionManager.showMemoryWindow() },
-            dismissResponseCard: { companionManager.dismissLatestResponseCard() },
-            runSuggestedNextAction: { companionManager.runSuggestedNextAction($0) },
-            prepareVoiceFollowUp: { companionManager.prepareForVoiceFollowUp() },
-            openFeedback: openFeedbackInbox,
-            closeSettings: hideSettingsPanel
-        )
-    }
-
     private func showSettingsPanel() {
-        withAnimation(.easeOut(duration: 0.16)) {
-            isShowingSettings = true
-        }
-        schedulePanelContentSizeRefresh(isShowingSettings: true)
+        companionManager.showSettingsWindow()
     }
 
-    private func hideSettingsPanel() {
-        withAnimation(.easeOut(duration: 0.16)) {
-            isShowingSettings = false
-        }
-        schedulePanelContentSizeRefresh(isShowingSettings: false)
-    }
-
-    private func schedulePanelContentSizeRefresh(isShowingSettings: Bool) {
-        let userInfo = ["isShowingSettings": isShowingSettings]
+    private func schedulePanelContentSizeRefresh() {
         DispatchQueue.main.async {
             NotificationCenter.default.post(
                 name: .clickyPanelContentSizeDidChange,
-                object: nil,
-                userInfo: userInfo
+                object: nil
             )
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
             NotificationCenter.default.post(
                 name: .clickyPanelContentSizeDidChange,
-                object: nil,
-                userInfo: userInfo
+                object: nil
             )
         }
     }
@@ -906,7 +890,7 @@ struct CompanionPanelView: View {
     private var speechToTextProviderRow: some View {
         HStack {
             HStack(spacing: 4) {
-                Image(systemName: "mic.badge.waveform")
+                Image(systemName: "waveform")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(DS.Colors.textTertiary)
                     .frame(width: 16)
@@ -1026,7 +1010,16 @@ struct CompanionPanelView: View {
                 Spacer()
 
                 HStack(spacing: 9) {
-                    if companionManager.hasCompletedOnboarding {
+                    #if DEBUG
+                    footerIconButton(
+                        systemImageName: "wrench",
+                        helpText: "Developer tools",
+                        isActive: showDevTools,
+                        action: toggleDevTools
+                    )
+                    #endif
+
+                    if companionManager.hasCompletedOnboarding && companionManager.isAdvancedModeEnabled {
                         footerIconButton(
                             systemImageName: "books.vertical",
                             helpText: "Open memory",
@@ -1049,6 +1042,13 @@ struct CompanionPanelView: View {
                     )
                 }
             }
+
+            #if DEBUG
+            if showDevTools {
+                devToolsSection
+                    .padding(.top, 8)
+            }
+            #endif
         }
     }
 
@@ -1060,22 +1060,104 @@ struct CompanionPanelView: View {
     private func footerIconButton(
         systemImageName: String,
         helpText: String,
+        isActive: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
             Image(systemName: systemImageName)
                 .font(.system(size: 9, weight: .semibold))
-                .foregroundColor(DS.Colors.textTertiary)
+                .foregroundColor(isActive ? DS.Colors.textOnAccent : DS.Colors.textTertiary)
                 .frame(width: 22, height: 22)
                 .background(
                     Circle()
-                        .fill(Color.white.opacity(0.08))
+                        .fill(isActive ? DS.Colors.accent : Color.white.opacity(0.08))
                 )
         }
         .buttonStyle(.plain)
         .pointerCursor()
         .help(helpText)
     }
+
+    #if DEBUG
+    private func toggleDevTools() {
+        withAnimation(.easeOut(duration: 0.16)) {
+            showDevTools.toggle()
+        }
+        schedulePanelContentSizeRefresh()
+    }
+
+    private var devToolsSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            devToolRow("Test cursor flight", systemImage: "arrow.up.right") {
+                companionManager.debugTestCursorFlight()
+                NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+            }
+
+            devToolRow("Show response card", systemImage: "text.bubble") {
+                companionManager.debugShowResponseCard()
+            }
+
+            devToolRow("Capture screen context", systemImage: "camera") {
+                companionManager.debugCaptureAgentScreenContext()
+            }
+
+            devToolRow("Reset transient UI", systemImage: "xmark.circle", destructive: true) {
+                companionManager.debugResetTransientUI()
+            }
+        }
+        .padding(.vertical, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(DS.Colors.surface1)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                )
+        )
+    }
+
+    private func devToolRow(
+        _ title: String,
+        systemImage: String,
+        destructive: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(destructive ? .red.opacity(0.72) : DS.Colors.textTertiary)
+                    .frame(width: 16)
+
+                Text(title)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(destructive ? .red.opacity(0.72) : DS.Colors.textSecondary)
+
+                Spacer()
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(DevToolRowButtonStyle())
+        .pointerCursor()
+    }
+
+    private struct DevToolRowButtonStyle: ButtonStyle {
+        @State private var isHovered = false
+
+        func makeBody(configuration: Configuration) -> some View {
+            configuration.label
+                .background(
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .fill(configuration.isPressed
+                              ? DS.Colors.surface4
+                              : isHovered ? DS.Colors.surface3 : Color.clear)
+                )
+                .onHover { isHovered = $0 }
+        }
+    }
+    #endif
 
     // MARK: - Footer
 
@@ -1141,7 +1223,7 @@ struct CompanionPanelView: View {
     }
 
     private func openFeedbackInbox() {
-        guard let url = URL(string: "https://github.com/jkneen/openclicky/issues") else {
+        guard let url = URL(string: "https://github.com/jasonkneen/openclicky/issues") else {
             return
         }
         NSWorkspace.shared.open(url)

@@ -24,11 +24,40 @@ struct CompanionScreenCapture {
 @MainActor
 enum CompanionScreenCaptureUtility {
 
+    /// Cached SCShareableContent. Fetching it cold takes 80–200ms because
+    /// ScreenCaptureKit enumerates every window on every display. Reusing
+    /// it for ~3 seconds lets push-to-talk → screenshot stay under the
+    /// audio-engine warmup budget. Refreshed on every miss.
+    private static var cachedShareableContent: SCShareableContent?
+    private static var cachedShareableContentExpiresAt: Date?
+    private static let shareableContentCacheLifetime: TimeInterval = 3.0
+
+    private static func currentShareableContent() async throws -> SCShareableContent {
+        if let cached = cachedShareableContent,
+           let expiresAt = cachedShareableContentExpiresAt,
+           expiresAt > Date() {
+            return cached
+        }
+        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        cachedShareableContent = content
+        cachedShareableContentExpiresAt = Date().addingTimeInterval(shareableContentCacheLifetime)
+        return content
+    }
+
+    /// Pre-fetches SCShareableContent so the first capture after key-down
+    /// skips the cold enumeration. Safe to call repeatedly — it just
+    /// refreshes the cache.
+    static func prewarmShareableContent() {
+        Task { @MainActor in
+            _ = try? await currentShareableContent()
+        }
+    }
+
     /// Captures all connected displays as JPEG data, labeling each with
     /// whether the user's cursor is on that screen. This gives the AI
     /// full context across multiple monitors.
     static func captureAllScreensAsJPEG() async throws -> [CompanionScreenCapture] {
-        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        let content = try await currentShareableContent()
 
         guard !content.displays.isEmpty else {
             throw NSError(domain: "CompanionScreenCapture", code: -1,
@@ -128,5 +157,104 @@ enum CompanionScreenCaptureUtility {
         }
 
         return capturedScreens
+    }
+
+    /// Captures only the frontmost window of the active app. Used by Tutor Mode
+    /// so proactive guidance focuses on the user's current task instead of
+    /// unrelated desktop clutter. Falls back to full-screen capture when no
+    /// suitable focused window is available.
+    static func captureFocusedWindowAsJPEG() async throws -> [CompanionScreenCapture] {
+        let content = try await currentShareableContent()
+
+        guard !content.displays.isEmpty else {
+            throw NSError(domain: "CompanionScreenCapture", code: -1,
+                          userInfo: [NSLocalizedDescriptionKey: "No display available for capture"])
+        }
+
+        let frontmostApp = NSWorkspace.shared.frontmostApplication
+        let ownBundleIdentifier = Bundle.main.bundleIdentifier
+        guard let targetWindow = content.windows.first(where: { window in
+            guard let appBundleID = window.owningApplication?.bundleIdentifier else { return false }
+            guard appBundleID != ownBundleIdentifier else { return false }
+            guard appBundleID == frontmostApp?.bundleIdentifier else { return false }
+            return window.isOnScreen && window.frame.width > 100 && window.frame.height > 100
+        }) else {
+            return try await captureAllScreensAsJPEG()
+        }
+
+        let filter = SCContentFilter(desktopIndependentWindow: targetWindow)
+        let configuration = SCStreamConfiguration()
+        let maxDimension = 1280
+        let windowWidth = max(1, Int(targetWindow.frame.width))
+        let windowHeight = max(1, Int(targetWindow.frame.height))
+        let aspectRatio = CGFloat(windowWidth) / CGFloat(windowHeight)
+        if windowWidth >= windowHeight {
+            configuration.width = maxDimension
+            configuration.height = Int(CGFloat(maxDimension) / aspectRatio)
+        } else {
+            configuration.height = maxDimension
+            configuration.width = Int(CGFloat(maxDimension) * aspectRatio)
+        }
+
+        let cgImage = try await SCScreenshotManager.captureImage(
+            contentFilter: filter,
+            configuration: configuration
+        )
+
+        guard let jpegData = NSBitmapImageRep(cgImage: cgImage)
+            .representation(using: .jpeg, properties: [.compressionFactor: 0.8]) else {
+            throw NSError(domain: "CompanionScreenCapture", code: -3,
+                          userInfo: [NSLocalizedDescriptionKey: "Failed to encode focused window JPEG"])
+        }
+
+        let appName = frontmostApp?.localizedName ?? "unknown app"
+        let windowTitle = targetWindow.title ?? ""
+        let windowLabel = windowTitle.isEmpty
+            ? "focused window (\(appName))"
+            : "focused window (\(appName) - \(windowTitle))"
+        let windowFrameInAppKit = appKitFrame(for: targetWindow, displays: content.displays)
+        let mouseLocation = NSEvent.mouseLocation
+
+        return [CompanionScreenCapture(
+            imageData: jpegData,
+            label: windowLabel,
+            isCursorScreen: windowFrameInAppKit.contains(mouseLocation),
+            displayWidthInPoints: windowWidth,
+            displayHeightInPoints: windowHeight,
+            displayFrame: windowFrameInAppKit,
+            screenshotWidthInPixels: configuration.width,
+            screenshotHeightInPixels: configuration.height
+        )]
+    }
+
+    private static func appKitFrame(for window: SCWindow, displays: [SCDisplay]) -> CGRect {
+        var nsScreenByDisplayID: [CGDirectDisplayID: NSScreen] = [:]
+        for screen in NSScreen.screens {
+            if let screenNumber = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID {
+                nsScreenByDisplayID[screenNumber] = screen
+            }
+        }
+
+        let windowCenter = CGPoint(x: window.frame.midX, y: window.frame.midY)
+        if let display = displays.first(where: { $0.frame.contains(windowCenter) }),
+           let screen = nsScreenByDisplayID[display.displayID] {
+            let localX = window.frame.origin.x - display.frame.origin.x
+            let localYFromTop = window.frame.origin.y - display.frame.origin.y
+            return CGRect(
+                x: screen.frame.origin.x + localX,
+                y: screen.frame.maxY - localYFromTop - window.frame.height,
+                width: window.frame.width,
+                height: window.frame.height
+            )
+        }
+
+        let screen = NSScreen.screens.first ?? NSScreen.main
+        let screenHeight = screen?.frame.height ?? window.frame.height
+        return CGRect(
+            x: window.frame.origin.x,
+            y: screenHeight - window.frame.origin.y - window.frame.height,
+            width: window.frame.width,
+            height: window.frame.height
+        )
     }
 }
