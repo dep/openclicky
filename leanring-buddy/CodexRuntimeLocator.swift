@@ -153,6 +153,29 @@ nonisolated enum CodexRuntimeLocator {
             .url
     }
 
+    static func appServerSupportsListenFlag(executableURL: URL) -> Bool {
+        let process = Process()
+        process.executableURL = executableURL
+        process.arguments = ["app-server", "--help"]
+
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return false
+        }
+
+        let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+        let helpText = String(data: outputData + errorData, encoding: .utf8) ?? ""
+        return helpText.contains("--listen")
+    }
+
     private static func codexVersion(executableURL: URL) -> CodexRuntimeVersion? {
         let process = Process()
         process.executableURL = executableURL

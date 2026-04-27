@@ -13,6 +13,11 @@ import SwiftUI
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
     @AppStorage(ClickyAccentTheme.userDefaultsKey) private var selectedAccentThemeID = ClickyAccentTheme.blue.rawValue
+    @AppStorage(AppBundleConfiguration.userPushToTalkShortcutDefaultsKey) private var pushToTalkShortcutRaw = BuddyPushToTalkShortcut.defaultShortcutOption.rawValue
+
+    private var pushToTalkShortcut: BuddyPushToTalkShortcut.ShortcutOption {
+        BuddyPushToTalkShortcut.ShortcutOption(rawValue: pushToTalkShortcutRaw) ?? .controlOption
+    }
     @State private var isPanelPinned: Bool
     #if DEBUG
     @State private var showDevTools = false
@@ -284,13 +289,14 @@ struct CompanionPanelView: View {
                         .font(.system(size: 12, weight: .bold))
                         .foregroundColor(DS.Colors.textSecondary)
 
-                    keyChip(symbol: "⌃", label: "control")
-
-                    Text("+")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundColor(DS.Colors.textTertiary)
-
-                    keyChip(symbol: "⌥", label: "option")
+                    ForEach(Array(pushToTalkShortcut.keyCapsuleLabels.enumerated()), id: \.offset) { index, label in
+                        if index > 0 {
+                            Text("+")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundColor(DS.Colors.textTertiary)
+                        }
+                        keyChip(label: label)
+                    }
 
                     Text("to talk.")
                         .font(.system(size: 12, weight: .bold))
@@ -344,25 +350,20 @@ struct CompanionPanelView: View {
         }
     }
 
-    private func keyChip(symbol: String, label: String) -> some View {
-        HStack(spacing: 4) {
-            Text(symbol)
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
-
-            Text(label)
-                .font(.system(size: 11, weight: .bold, design: .monospaced))
-        }
-        .foregroundColor(DS.Colors.textPrimary)
-        .padding(.horizontal, 6)
-        .padding(.vertical, 4)
-        .background(
-            RoundedRectangle(cornerRadius: 4, style: .continuous)
-                .fill(Color.white.opacity(0.10))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 4, style: .continuous)
-                .stroke(Color.white.opacity(0.14), lineWidth: 1)
-        )
+    private func keyChip(label: String) -> some View {
+        Text(label)
+            .font(.system(size: 11, weight: .bold, design: .monospaced))
+            .foregroundColor(DS.Colors.textPrimary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(Color.white.opacity(0.10))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .stroke(Color.white.opacity(0.14), lineWidth: 1)
+            )
     }
 
     // MARK: - Start Button

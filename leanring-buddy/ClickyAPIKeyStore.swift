@@ -244,10 +244,7 @@ final class ClickyAPIKeyStore: ObservableObject {
             return
         }
 
-<<<<<<< HEAD
-=======
         var allMigrated = true
->>>>>>> feature/keychain-byo-keys
         for identifier in ClickyAPIKeyIdentifier.allCases {
             let legacyValue = userDefaults.string(forKey: identifier.legacyUserDefaultsKey)?
                 .trimmingCharacters(in: .whitespacesAndNewlines)

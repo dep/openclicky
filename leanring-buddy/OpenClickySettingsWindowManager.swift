@@ -251,6 +251,10 @@ struct OpenClickySettingsView: View {
                 )
             }
 
+            settingsGroup("Push-to-talk shortcut") {
+                shortcutPickerRow
+            }
+
             settingsGroup("Cursor color") {
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 4), spacing: 10) {
                     ForEach([ClickyAccentTheme.rose, .blue, .amber, .mint]) { accentTheme in
@@ -259,6 +263,32 @@ struct OpenClickySettingsView: View {
                 }
             }
         }
+    }
+
+    private var shortcutPickerRow: some View {
+        HStack(spacing: 12) {
+            rowIcon("keyboard")
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Hold shortcut to talk")
+                    .font(.system(size: 13, weight: .medium))
+                Text("Keys to hold for push-to-talk voice input.")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+            Picker("", selection: Binding(
+                get: { companionManager.buddyDictationManager.pushToTalkShortcutOption },
+                set: { companionManager.setPushToTalkShortcut($0) }
+            )) {
+                ForEach(BuddyPushToTalkShortcut.ShortcutOption.allCases) { option in
+                    Text(option.displayText).tag(option)
+                }
+            }
+            .labelsHidden()
+            .frame(width: 200)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
     }
 
     private var voicePanel: some View {

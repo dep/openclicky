@@ -27,7 +27,10 @@ nonisolated final class CodexProcessManager: @unchecked Sendable {
         let errorPipe = Pipe()
 
         process.executableURL = executableURL
-        process.arguments = ["app-server", "--listen", "stdio://"]
+        let usesListenFlag = CodexRuntimeLocator.appServerSupportsListenFlag(executableURL: executableURL)
+        process.arguments = usesListenFlag
+            ? ["app-server", "--listen", "stdio://"]
+            : ["app-server"]
         process.standardInput = inputPipe
         process.standardOutput = outputPipe
         process.standardError = errorPipe

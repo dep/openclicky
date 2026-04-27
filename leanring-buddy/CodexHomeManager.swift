@@ -124,9 +124,8 @@ final class CodexHomeManager {
             model: model,
             reasoningEffort: reasoningEffort,
             workerBaseURL: workerBaseURL,
-            modelInstructionsFileName: modelInstructionsFileName,
-            bundledSkillsDirectoryName: bundledSkillsDirectoryName,
-            learnedSkillsDirectoryName: learnedSkillsDirectoryName,
+            bundledSkillsDirectoryPath: skills.path,
+            learnedSkillsDirectoryPath: learnedSkillsDirectory.path,
             includeOpenAIDeveloperDocsMCP: true
         )
         let configFile = home.appendingPathComponent("config.toml", isDirectory: false)

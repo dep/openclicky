@@ -14,12 +14,14 @@ import Foundation
 import Speech
 
 enum BuddyPushToTalkShortcut {
-    enum ShortcutOption {
+    enum ShortcutOption: String, CaseIterable, Identifiable {
         case shiftFunction
         case controlOption
         case shiftControl
         case controlOptionSpace
         case shiftControlSpace
+
+        var id: String { rawValue }
 
         var displayText: String {
             switch self {
@@ -92,10 +94,23 @@ enum BuddyPushToTalkShortcut {
         case keyUp
     }
 
-    static let currentShortcutOption: ShortcutOption = .controlOption
+    static let defaultShortcutOption: ShortcutOption = .controlOption
     static let pushToTalkKeyCode: UInt16 = 49 // Space
-    static let pushToTalkDisplayText = currentShortcutOption.displayText
-    static let pushToTalkTooltipText = "push to talk (\(pushToTalkDisplayText))"
+
+    static var currentShortcutOption: ShortcutOption {
+        guard let raw = UserDefaults.standard.string(forKey: AppBundleConfiguration.userPushToTalkShortcutDefaultsKey),
+              let option = ShortcutOption(rawValue: raw) else {
+            return defaultShortcutOption
+        }
+        return option
+    }
+
+    static func setShortcutOption(_ option: ShortcutOption) {
+        UserDefaults.standard.set(option.rawValue, forKey: AppBundleConfiguration.userPushToTalkShortcutDefaultsKey)
+    }
+
+    static var pushToTalkDisplayText: String { currentShortcutOption.displayText }
+    static var pushToTalkTooltipText: String { "push to talk (\(pushToTalkDisplayText))" }
 
     static func shortcutTransition(
         for event: NSEvent,
@@ -236,6 +251,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     @Published private(set) var transcriptionProviderID = BuddyTranscriptionProviderID.automatic.rawValue
     @Published var lastErrorMessage: String?
     @Published private(set) var currentPermissionProblem: BuddyDictationPermissionProblem?
+    @Published private(set) var pushToTalkShortcutOption: BuddyPushToTalkShortcut.ShortcutOption = BuddyPushToTalkShortcut.currentShortcutOption
 
     var isDictationInProgress: Bool {
         isPreparingToRecord || isRecordingFromMicrophoneButton || isRecordingFromKeyboardShortcut || isFinalizingTranscript
@@ -305,6 +321,11 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         let transcriptionProvider = BuddyTranscriptionProviderFactory.makeProvider(preferredProviderID: resolvedProviderID)
         self.transcriptionProvider = transcriptionProvider
         transcriptionProviderDisplayName = transcriptionProvider.displayName
+    }
+
+    func setPushToTalkShortcutOption(_ option: BuddyPushToTalkShortcut.ShortcutOption) {
+        BuddyPushToTalkShortcut.setShortcutOption(option)
+        pushToTalkShortcutOption = option
     }
 
     func updateContextualKeyterms(_ contextualKeyterms: [String]) {

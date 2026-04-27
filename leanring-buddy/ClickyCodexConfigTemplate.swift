@@ -7,9 +7,8 @@ struct ClickyCodexConfigTemplate: Equatable {
     var model: String
     var reasoningEffort: String
     var workerBaseURL: URL
-    var modelInstructionsFileName: String
-    var bundledSkillsDirectoryName: String
-    var learnedSkillsDirectoryName: String
+    var bundledSkillsDirectoryPath: String
+    var learnedSkillsDirectoryPath: String
     var includeOpenAIDeveloperDocsMCP: Bool
     var cuaDriverMCPCommand: String?
 
@@ -17,18 +16,16 @@ struct ClickyCodexConfigTemplate: Equatable {
         model: String = OpenClickyModelCatalog.defaultCodexActionsModelID,
         reasoningEffort: String = "medium",
         workerBaseURL: URL = ClickyCodexBackend.configuredWorkerBaseURL(),
-        modelInstructionsFileName: String = "OpenClickyModelInstructions.md",
-        bundledSkillsDirectoryName: String = "OpenClickyBundledSkills",
-        learnedSkillsDirectoryName: String = "OpenClickyLearnedSkills",
+        bundledSkillsDirectoryPath: String = "",
+        learnedSkillsDirectoryPath: String = "",
         includeOpenAIDeveloperDocsMCP: Bool = true,
         cuaDriverMCPCommand: String? = CuaDriverMCPConfiguration.resolvedCommandPath()
     ) {
         self.model = model
         self.reasoningEffort = reasoningEffort
         self.workerBaseURL = workerBaseURL
-        self.modelInstructionsFileName = modelInstructionsFileName
-        self.bundledSkillsDirectoryName = bundledSkillsDirectoryName
-        self.learnedSkillsDirectoryName = learnedSkillsDirectoryName
+        self.bundledSkillsDirectoryPath = bundledSkillsDirectoryPath
+        self.learnedSkillsDirectoryPath = learnedSkillsDirectoryPath
         self.includeOpenAIDeveloperDocsMCP = includeOpenAIDeveloperDocsMCP
         self.cuaDriverMCPCommand = cuaDriverMCPCommand
     }
@@ -96,18 +93,23 @@ struct ClickyCodexConfigTemplate: Equatable {
             ])
         }
 
-        lines.append(contentsOf: [
-            "",
-            "[[skills.config]]",
-            "model_instructions_file = \"\(escape(modelInstructionsFileName))\"",
-            "bundled_skills_dir = \"\(escape(bundledSkillsDirectoryName))\"",
-            "enabled = true",
-            "",
-            "[[skills.config]]",
-            "model_instructions_file = \"\(escape(modelInstructionsFileName))\"",
-            "bundled_skills_dir = \"\(escape(learnedSkillsDirectoryName))\"",
-            "enabled = true"
-        ])
+        if let bundledPath = normalizedOptionalString(bundledSkillsDirectoryPath) {
+            lines.append(contentsOf: [
+                "",
+                "[[skills.config]]",
+                "path = \"\(escape(bundledPath))\"",
+                "enabled = true"
+            ])
+        }
+
+        if let learnedPath = normalizedOptionalString(learnedSkillsDirectoryPath) {
+            lines.append(contentsOf: [
+                "",
+                "[[skills.config]]",
+                "path = \"\(escape(learnedPath))\"",
+                "enabled = true"
+            ])
+        }
 
         return lines.joined(separator: "\n") + "\n"
     }

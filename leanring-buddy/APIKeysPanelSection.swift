@@ -241,10 +241,7 @@ private struct APIKeyField: View {
                 TextField(placeholder, text: $inputValue, onCommit: commitChange)
             }
         }
-<<<<<<< HEAD
-=======
         .focused($isFocused)
->>>>>>> feature/keychain-byo-keys
         .textFieldStyle(.plain)
         .font(.system(size: 12, design: .monospaced))
         .foregroundColor(DS.Colors.textPrimary)

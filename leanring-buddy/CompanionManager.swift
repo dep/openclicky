@@ -857,6 +857,10 @@ final class CompanionManager: ObservableObject {
         buddyDictationManager.setTranscriptionProvider(providerID)
     }
 
+    func setPushToTalkShortcut(_ option: BuddyPushToTalkShortcut.ShortcutOption) {
+        buddyDictationManager.setPushToTalkShortcutOption(option)
+    }
+
     func setCodexAgentAPIKey(_ apiKey: String) {
         ClickyAPIKeyStore.shared.setValue(apiKey, for: .openAIAPIKey)
         openAIAPI.setAPIKey(AppBundleConfiguration.openAIAPIKey())
@@ -5266,6 +5270,12 @@ final class CompanionManager: ObservableObject {
         switch appName {
         case "Google Chrome",
             "Safari",
+            "Firefox",
+            "Arc",
+            "Brave Browser",
+            "Microsoft Edge",
+            "Opera",
+            "Vivaldi",
             "Xcode",
             "Terminal",
             "Ghostty",
@@ -5282,7 +5292,9 @@ final class CompanionManager: ObservableObject {
             "Codex":
             return true
         default:
-            return false
+            // Also accept whatever the system resolves as the default browser name,
+            // so less common browsers (Zen, Orion, etc.) work when the user says "browser".
+            return appName == Self.defaultBrowserApplicationName()
         }
     }
 
@@ -5754,6 +5766,8 @@ final class CompanionManager: ObservableObject {
 
         let lowered = target.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current).lowercased()
         switch lowered {
+        case "browser", "web browser", "my browser", "the browser":
+            return Self.defaultBrowserApplicationName()
         case "chrome", "google chrome":
             return "Google Chrome"
         case "safari":
@@ -5795,6 +5809,38 @@ final class CompanionManager: ObservableObject {
             return "GitHub Desktop"
         default:
             return target
+        }
+    }
+
+    private static func defaultBrowserApplicationName() -> String {
+        guard let httpsURL = URL(string: "https://"),
+              let appURL = NSWorkspace.shared.urlForApplication(toOpen: httpsURL) else {
+            return "Safari"
+        }
+        let name = appURL.deletingPathExtension().lastPathComponent
+        // Normalize common browser names so they resolve through the known
+        // bundle-identifier table. Unknown browsers fall through to their
+        // .app name, which standardApplicationURL will resolve directly.
+        let lowered = name.lowercased()
+        switch lowered {
+        case "google chrome", "chrome":
+            return "Google Chrome"
+        case "safari":
+            return "Safari"
+        case "firefox":
+            return "Firefox"
+        case "arc":
+            return "Arc"
+        case "brave browser", "brave":
+            return "Brave Browser"
+        case "microsoft edge", "edge":
+            return "Microsoft Edge"
+        case "opera":
+            return "Opera"
+        case "vivaldi":
+            return "Vivaldi"
+        default:
+            return name
         }
     }
 
@@ -6133,6 +6179,18 @@ final class CompanionManager: ObservableObject {
             return ["com.tinyspeck.slackmacgap"]
         case "GitHub Desktop":
             return ["com.github.GitHubClient"]
+        case "Firefox":
+            return ["org.mozilla.firefox"]
+        case "Arc":
+            return ["company.thebrowser.Browser"]
+        case "Brave Browser":
+            return ["com.brave.Browser"]
+        case "Microsoft Edge":
+            return ["com.microsoft.edgemac"]
+        case "Opera":
+            return ["com.operasoftware.Opera"]
+        case "Vivaldi":
+            return ["com.vivaldi.Vivaldi"]
         default:
             return []
         }
@@ -9094,7 +9152,17 @@ private final class UserActivityIdleDetector: ObservableObject {
         hasUserActedSinceLastObservation = true
 
         globalEventMonitor = NSEvent.addGlobalMonitorForEvents(
-            matching: [.mouseMoved, .leftMouseDown, .rightMouseDown, .keyDown, .scrollWheel, .leftMouseDragged]
+            matching: [.mouseMoved, .leftMouseDown, .rightMouseDown, .keyDown, .flagsChanged, .scrollWheel, .leftMouseDragged]
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.recordUserActivity()
+            }
+        }
+
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.recordUserActivity()
@@ -9113,6 +9181,7 @@ private final class UserActivityIdleDetector: ObservableObject {
             NSEvent.removeMonitor(globalEventMonitor)
             self.globalEventMonitor = nil
         }
+        NSWorkspace.shared.notificationCenter.removeObserver(self, name: NSWorkspace.didActivateApplicationNotification, object: nil)
         idleCheckTimer?.invalidate()
         idleCheckTimer = nil
         isUserIdle = false
