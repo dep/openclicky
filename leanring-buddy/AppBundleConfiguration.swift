@@ -30,7 +30,7 @@ nonisolated enum AppBundleConfiguration {
     static let userWidgetsIncludeAgentTaskNamesDefaultsKey = "openClickyWidgetsIncludeAgentTaskNames"
     static let userWidgetsIncludeMemorySnippetsDefaultsKey = "openClickyWidgetsIncludeMemorySnippets"
     static let userWidgetsIncludeFocusedAppContextDefaultsKey = "openClickyWidgetsIncludeFocusedAppContext"
-    static let appGroupIdentifier = "group.com.jkneen.openclicky"
+    static let appGroupIdentifier = "group.com.dnnypck.openclicky"
 
     static func anthropicAPIKey() -> String? {
         let configuredAnthropicAPIKey = userDefaultsValue(forKey: userAnthropicAPIKeyDefaultsKey) ?? stringValue(
