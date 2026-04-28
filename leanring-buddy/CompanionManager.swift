@@ -887,7 +887,7 @@ final class CompanionManager: ObservableObject {
     }
 
     func setCodexAgentAPIKey(_ apiKey: String) {
-        persistOptionalSecret(apiKey, defaultsKey: AppBundleConfiguration.userCodexAgentAPIKeyDefaultsKey)
+        ClickyAPIKeyStore.shared.setValue(apiKey, for: .openAIAPIKey)
         openAIAPI.setAPIKey(AppBundleConfiguration.openAIAPIKey())
         codexAgentSessions.forEach { $0.stop(reason: "api_key_reconfigured") }
     }
